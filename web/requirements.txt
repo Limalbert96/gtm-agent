@@ -1,0 +1,13 @@
+# Extra dependencies for the web chat frontend (web/server.py).
+# Install alongside the main app's requirements from the repo root:
+#     pip install -r requirements.txt -r web/requirements.txt
+
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Optional: enable text extraction from uploaded PDF / Word documents.
+# Without these, /api/upload still works for text files and asks the user to
+# paste text for unsupported binary formats.
+# pypdf
+# python-docx

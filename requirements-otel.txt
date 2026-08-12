@@ -1,0 +1,5 @@
+# Optional: OpenTelemetry trace export (see gtm_agent/observability.py).
+# Only needed if you want to send the agent's traces to New Relic or any other
+# OTLP backend. Enable by setting OTEL_EXPORTER_OTLP_ENDPOINT (+ _HEADERS).
+opentelemetry-sdk>=1.20.0
+opentelemetry-exporter-otlp-proto-http>=1.20.0

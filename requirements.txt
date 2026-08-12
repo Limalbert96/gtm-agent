@@ -1,0 +1,8 @@
+# Google Agent Development Kit + LiteLLM (for Claude as the model backend).
+# Pin as you like; these lower bounds reflect the API this project targets.
+google-adk>=1.0.0
+litellm>=1.40.0
+
+# Optional extras:
+#   - web/requirements.txt          -> the chat frontend (FastAPI/uvicorn)
+#   - requirements-otel.txt         -> OpenTelemetry trace export (New Relic, etc.)

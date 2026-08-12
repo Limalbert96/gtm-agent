@@ -1,0 +1,22 @@
+{
+  "name": "gtm-lifecycle-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "React + Vite chat UI for the GTM Lifecycle multi-agent app.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.0.18",
+    "@fontsource/space-grotesk": "^5.0.19",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.2"
+  }
+}

@@ -1,0 +1,49 @@
+# Secrets / local config — never commit these
+.env
+.env.local
+*.local
+
+# Private, internal-only content (job aids, sales plays, playbooks). Anything
+# marked confidential / "internal use only" goes here and is NEVER committed.
+gtm_agent/playbooks/private/
+playbooks/private/
+*.private.md
+
+# ADK local state
+.adk/
+**/.adk/
+*.session.db
+
+# ADK eval sets — auto-generated from live runs; may capture private playbook
+# content (they record tool outputs), so never commit them.
+*.evalset.json
+*.evalset.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Vite frontend (web/frontend) — deps and build output aren't committed.
+# The built SPA is generated with `npm run build`; commit only the source.
+node_modules/
+web/frontend/dist/
+npm-debug.log*
+yarn-error.log*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# editor / sed backups (may contain secrets)
+*.bak
+.env.*.bak
+
+# stray private env backup (contains gateway config)
+.env.example2

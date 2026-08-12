@@ -1,0 +1,95 @@
+name: Sync to Hugging Face Space
+
+# Mirrors this repo into a Hugging Face Docker Space on every push, which makes
+# the Space rebuild and redeploy. Requires (see README, "Auto-sync from GitHub"):
+#   - Repository variable HF_SPACE  = "<owner>/<space-name>"
+#   - Repository variable HF_USER   = your Hugging Face username (the token owner)
+#   - Repository secret   HF_TOKEN  = a Hugging Face access token with WRITE scope
+#
+# The push is a force push: the Space is a mirror of this repo, so edits made in
+# the Space's web UI are overwritten on the next sync. Make changes here, not there.
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: hf-space-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          # The Space needs real history, not a shallow clone, to accept the push.
+          fetch-depth: 0
+          lfs: true
+
+      - name: Verify sync target is configured
+        env:
+          HF_SPACE: ${{ vars.HF_SPACE }}
+          HF_USER: ${{ vars.HF_USER }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          missing=0
+          if [ -z "$HF_SPACE" ]; then
+            echo "::error::Repository variable HF_SPACE is not set (expected '<owner>/<space-name>')."
+            missing=1
+          elif ! printf '%s' "$HF_SPACE" | grep -q '^[^/][^/]*/[^/][^/]*$'; then
+            echo "::error::HF_SPACE must look like '<owner>/<space-name>', got '$HF_SPACE'."
+            missing=1
+          fi
+          [ -n "$HF_USER" ] || { echo "::error::Repository variable HF_USER is not set (your Hugging Face username)."; missing=1; }
+          [ -n "$HF_TOKEN" ] || { echo "::error::Repository secret HF_TOKEN is not set (HF token with write scope)."; missing=1; }
+          exit $missing
+
+      - name: Refuse to sync if secrets are tracked
+        run: |
+          # A Space can be public. Never let a real env file or key ride along.
+          leaked=$(git ls-files \
+            | grep -E '(^|/)\.env$|(^|/)\.env\.(local|production)$|\.pem$|\.p12$|(^|/)id_(rsa|ed25519)$|(^|/)playbooks/private/' \
+            || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::Refusing to push — these tracked files look like secrets:"
+            printf '%s\n' "$leaked"
+            echo "Untrack them (git rm --cached <file>) and confirm .gitignore covers them."
+            exit 1
+          fi
+          echo "OK: no tracked secret files."
+
+      - name: Verify Space metadata block
+        run: |
+          # Hugging Face only reads the YAML front-matter if it starts at byte 0.
+          if [ "$(head -n 1 README.md)" != "---" ]; then
+            echo "::error::README.md must begin with the Space front-matter block ('---') on line 1."
+            exit 1
+          fi
+          grep -qE '^sdk:[[:space:]]*docker[[:space:]]*$' README.md \
+            || { echo "::error::README.md front-matter must set 'sdk: docker'."; exit 1; }
+          grep -qE '^app_port:[[:space:]]*7860[[:space:]]*$' README.md \
+            || { echo "::error::README.md front-matter must set 'app_port: 7860' to match the Dockerfile."; exit 1; }
+          echo "OK: Space metadata present."
+
+      - name: Push to the Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+          HF_USER: ${{ vars.HF_USER }}
+        run: |
+          # HEAD:refs/heads/main works whether this repo's branch is main or master;
+          # a Space's default branch is always main.
+          git push --force \
+            "https://$HF_USER:$HF_TOKEN@huggingface.co/spaces/$HF_SPACE" \
+            HEAD:refs/heads/main
+
+      - name: Where to watch the build
+        if: success()
+        env:
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          echo "Pushed. Build logs: https://huggingface.co/spaces/$HF_SPACE?logs=build"
+          echo "App: https://huggingface.co/spaces/$HF_SPACE"
