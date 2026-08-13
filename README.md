@@ -361,10 +361,20 @@ The model id defaults to `anthropic/claude-sonnet-4-20250514` (LiteLLM
 
 - **Anthropic:** `anthropic/claude-...` + `ANTHROPIC_API_KEY` (default).
 - **Google Gemini:** `gemini/gemini-2.5-pro` (or `-flash`) + `GEMINI_API_KEY` from
-  [AI Studio](https://aistudio.google.com/apikey).
+  [AI Studio](https://aistudio.google.com/apikey). Uses ADK's **native** Gemini client
+  rather than LiteLLM — see below.
 - **Groq (hosted open models, free tier):** `groq/llama-3.3-70b-versatile` +
   `GROQ_API_KEY` — solid tool-calling, no local GPU. Good for free hosting (see below).
 - **Local (Ollama / LM Studio / vLLM):** e.g. `ollama_chat/qwen3`.
+
+**Gemini goes through ADK's native client.** Every other provider is wrapped in ADK's
+LiteLLM adapter, but Gemini via LiteLLM gives up streaming and tool-calling fidelity, and
+ADK warns about it (`[GEMINI_VIA_LITELLM]`). So a `gemini/…` id builds
+`Gemini("gemini-2.5-flash")` directly and passes `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) to
+it explicitly. `GTM_MAX_TOKENS` still applies — the native class has no `max_tokens`, so
+it's set as each agent's `generate_content_config.max_output_tokens` instead. There's
+nothing to configure and no env var to add: a `gemini/` id picks the native client, and
+LiteLLM is never involved.
 
 Because this is a **tool-calling** multi-agent system, if you run a local model
 choose one with solid function-calling support (e.g. `qwen3`, `qwen2.5`, `mistral`,
