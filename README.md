@@ -12,7 +12,8 @@ license: mit
 <!--
 The YAML block above is Hugging Face Space metadata (Docker SDK), required for
 deploying to a Space. It must stay at the very top of this file. Other Markdown
-viewers ignore it. See the "Deploy to Hugging Face Spaces" section below.
+viewers ignore it, and it is only used if you deploy to a Space — the primary
+deployment is Render. See the "Deploy" section below.
 -->
 
 # GTM Lifecycle Agent
@@ -161,17 +162,116 @@ in `web/frontend/` instead (serves on `:5173`, proxies `/api` to the backend). S
 ## Observability (optional)
 
 ADK instruments the agent with OpenTelemetry (the spans behind the dev UI's "Trace"
-view). `gtm_agent/observability.py` will export those spans to any OTLP backend — New
-Relic, Grafana Tempo, Honeycomb, a local Collector — when you configure the standard
-OTel env vars. It's off unless an endpoint is set, and vendor-neutral (no hostnames in
-code). To send traces to New Relic:
+view). `gtm_agent/observability.py` exports **traces, metrics, and logs** over OTLP to
+any compatible backend — New Relic, Grafana, Honeycomb, a local Collector. It's off
+unless an endpoint is set, vendor-neutral (no hostnames in code), and configured
+**entirely by environment variables**: there is nothing to edit in that file to point it
+at a backend.
+
+These variables are documented here only; the deploy sections point back to this table.
+
+| Variable | Purpose |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base URL — setting it is what turns telemetry on. No `/v1/...` path; the SDK appends it. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Auth, as a comma-separated list of `name=value` header pairs. New Relic: `api-key=<ingest License key>`. |
+| `OTEL_SERVICE_NAME` | Service name in the backend (default `gtm-agent`). |
+| `OTEL_RESOURCE_ATTRIBUTES` | Optional extra resource tags, e.g. `deployment.environment=render`. |
+| `GTM_OTEL_METRICS` | `0` to skip the metrics pipeline. |
+| `GTM_OTEL_LOGS` | `0` to skip the logs pipeline. |
+| `GTM_OTEL_LOG_LEVEL` | Minimum level shipped as logs (default `INFO`). |
+
+Locally:
 
 ```bash
-pip install -r requirements-otel.txt
+pip install -r requirements-otel.txt      # the Dockerfile already installs these
 export OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.nr-data.net
-export OTEL_EXPORTER_OTLP_HEADERS="api-key=YOUR_LICENSE_KEY"
+export OTEL_EXPORTER_OTLP_HEADERS="api-key=YOUR_INGEST_LICENSE_KEY"
 export OTEL_SERVICE_NAME=gtm-agent
 ```
+
+Startup prints which signals came up — the fastest way to tell config from plumbing:
+
+```
+[observability] OTel enabled -> https://otlp.nr-data.net (service.name=gtm-agent, signals=traces+metrics+logs)
+```
+
+### New Relic specifics
+
+- **Endpoint:** `https://otlp.nr-data.net`, or `https://otlp.eu01.nr-data.net` for an EU
+  account — the wrong region 403s.
+- **Key:** an **ingest License key** (~40 chars, usually ends `NRAL`), *not* a user key
+  (`NRAK-…`), sent as the `api-key` header:
+  `OTEL_EXPORTER_OTLP_HEADERS=api-key=NRAL…`
+  - The doubled `=` is correct. Per the
+    [OTLP exporter spec](https://opentelemetry.io/docs/languages/sdk-configuration/otlp-exporter/),
+    this variable is a comma-separated list of `name=value` header pairs — unlike the
+    scalar `OTEL_SERVICE_NAME` and `..._ENDPOINT`. Drop the `api-key=` and it fails
+    silently: the SDK logs `Header format invalid!`, sends no auth header, and every
+    export 403s while the app looks perfectly healthy.
+  - Other backends use their own header name — e.g. `x-honeycomb-team=<key>`.
+- **No quotes** when typing it into a hosting dashboard — the `"…"` above is shell syntax.
+- **`OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT=4095`** and
+  **`OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT=4095`** — ADK puts prompts and responses on
+  span attributes, and New Relic drops values longer than this. Set both.
+- **`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=DELTA`** — what New Relic expects
+  for counters and histograms.
+
+**Where each signal lands.** OTel's three signals become three New Relic data types, each
+queried separately:
+
+| Signal | NRQL |
+|---|---|
+| Traces | `FROM Span SELECT * WHERE service.name = 'gtm-agent'` |
+| Logs | `FROM Log SELECT * WHERE service.name = 'gtm-agent'` |
+| Metrics | `FROM Metric SELECT * WHERE service.name = 'gtm-agent'` |
+
+On "events": spans **are** events in New Relic — a trace arrives as `Span` records, which
+is what powers APM & Services and the distributed-trace UI. OTel has no separate event
+signal; OTel "events" are log records carrying an `event.name`, so they ride the logs
+pipeline.
+
+Traces and metrics both carry real data (see below). Logs are whatever the app and its
+libraries write through stdlib `logging`, automatically stamped with the active
+`trace_id`/`span_id` so each record correlates to a span.
+
+### GenAI conventions and New Relic AI monitoring
+
+**No extra GenAI instrumentation is needed.** ADK self-instruments against the OpenTelemetry
+[GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/). The
+per-framework instrumentors New Relic's AI-monitoring guide lists (`OpenAIInstrumentor`,
+`AnthropicInstrumentor`, `LangchainInstrumentor`) are for apps that call an LLM SDK
+directly — this one goes through ADK, which already emits the conventions itself.
+
+ADK 2.6.3 emits, among others:
+
+- **Span attributes:** `gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`,
+  `gen_ai.request.max_tokens`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,
+  `gen_ai.response.finish_reasons`, `gen_ai.agent.name`, `gen_ai.tool.definitions`,
+  `gen_ai.conversation.id`.
+- **Metrics:** `gen_ai.invoke_agent.duration`, `gen_ai.invoke_workflow.duration`,
+  `gen_ai.execute_tool.duration`, `gen_ai.invoke_agent.inference_calls`,
+  `gen_ai.invoke_agent.tool_calls`, plus client operation duration and token usage. This
+  is why the metrics pipeline is worth leaving on — per-agent latency, tool-call counts,
+  and token usage all arrive as `Metric` data.
+
+New Relic identifies AI spans by the presence of `gen_ai.system` / `gen_ai.provider.name`,
+so **APM & Services → AI monitoring** should populate with no extra work. Confirm with:
+
+```sql
+FROM Span SELECT count(*)
+WHERE `gen_ai.system` IS NOT NULL OR `gen_ai.provider.name` IS NOT NULL
+FACET `service.name`, `gen_ai.operation.name`
+```
+
+Two caveats: AI monitoring is a **preview** feature that must be enabled on the account,
+and its views key off `gen_ai.operation.name` values like `chat` — ADK also emits
+agent/tool/workflow operations, which may only surface in raw `Span` queries.
+
+> **Prompt content ships by default.** ADK's `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS`
+> defaults *on*, which puts `gen_ai.input.messages`, `gen_ai.output.messages`, and
+> `gen_ai.system_instructions` — full prompt and response text — into your backend. Set it
+> to `false` to send latency, tokens, and errors only. (ADK's own `adk deploy` defaults it
+> to `false` for exactly this reason.) Relevant once real CRM data replaces `data.py`.
 
 ## Things to ask it
 
@@ -247,6 +347,8 @@ gtm-agent/
 │   └── static/             # legacy dependency-free page (fallback)
 ├── run_cli.py              # programmatic ADK Runner example
 ├── validate_offline.py     # no-key, no-network sanity checks
+├── Dockerfile              # builds the SPA + serves it; used by Render / HF Spaces
+├── .github/workflows/      # optional: mirror this repo to a Hugging Face Space
 ├── requirements.txt
 ├── requirements-otel.txt   # optional tracing deps
 └── .env.example
@@ -281,19 +383,76 @@ tool call — try the larger `qwen3:32b`, or make routing explicit in `agent.py`
 > values free of trailing `# comments`: the web server's `.env` reader doesn't strip
 > them, so they become part of the value (e.g. a broken `GTM_LOCAL_BASE_URL`).
 
-## Deploy to Hugging Face Spaces (free)
+## Deploy
 
-The repo ships a `Dockerfile`, so it runs as-is on a **Hugging Face Space** (Docker
-SDK) — including the free CPU tier, no credit card. The container builds the React SPA
-and serves the whole app (UI + streaming API) from one port (`7860`, declared in the
-front-matter at the top of this README).
+The repo ships a `Dockerfile`, so one image runs anywhere Docker does: it builds the
+React SPA and serves the whole app (UI + streaming API) from a single port — `7860` by
+default, or whatever `$PORT` the host injects.
+
+Neither free tier below can host open-model *weights* (CPU only), so the app always calls
+a hosted model API; `GTM_MODEL` alone picks which one. In both cases the host supplies
+**no** model key — that's a separate, free signup with a model provider.
+
+- **[Render](#render-docker)** — the primary deployment.
+- **[Hugging Face Spaces](#hugging-face-spaces-free-alternative)** — free alternative and
+  fallback, with an optional GitHub Action that keeps a Space mirrored automatically.
+
+### Render (Docker)
+
+**1. Create the service** — [dashboard.render.com](https://dashboard.render.com) →
+**New → Web Service** → connect this GitHub repo. Render detects the `Dockerfile` and
+picks the **Docker** runtime; leave the build and start commands **empty** (the image's
+`CMD` handles both). Choose a region and the **Free** instance type.
+
+**2. Add environment variables** — in the creation form's *Environment* section, or the
+*Environment* tab afterwards. **Never commit `.env`**; on Render every value lives here.
+
+| Variable | Value | Notes |
+|---|---|---|
+| `GTM_MODEL` | `gemini/gemini-2.5-flash` | LiteLLM `provider/name`. Also `groq/llama-3.3-70b-versatile`, `anthropic/claude-sonnet-4-20250514`. |
+| `GEMINI_API_KEY` | `AIza…` | Required for `gemini/…` — [AI Studio](https://aistudio.google.com/apikey). |
+| `GROQ_API_KEY` | `gsk_…` | Required for `groq/…` — [console.groq.com/keys](https://console.groq.com/keys). Safe to keep both keys set; `GTM_MODEL` alone selects the provider. |
+| `GTM_MAX_TOKENS` | `4096` | Output ceiling, not a reservation. Raise only if answers truncate. |
+| `GTM_PRODUCT_NAME` | `Acme Observability` | Optional — brands what the agents sell. |
+
+For telemetry, add the variables from [Observability](#observability-optional) — same
+names and values, entered here **without** the shell quoting. Nothing else to configure;
+the image already ships the exporters.
+
+> Telemetry carries prompt and response text — the account and deal details from
+> `data.py`. Sample data today, but worth remembering before wiring in a real CRM.
+
+**3. Create Web Service.** Render builds the image and boots it, then redeploys on every
+push to the connected branch (auto-deploy is on by default). The app lands at
+`https://<service-name>.onrender.com`.
+
+**Things that bite on Render:**
+
+- **Don't set `PORT` yourself.** Render injects it and the image honors `${PORT:-7860}`;
+  overriding it breaks routing.
+- **Don't set `GTM_LOCAL_BASE_URL` or `GTM_LOCAL_API_KEY`.** Any provider other than
+  Anthropic and Gemini takes the local-model branch in `agent.py`, where those two vars
+  are injected as `api_base`/`api_key` — which breaks Groq with a connection error or a
+  misleading 401.
+- **Free instances spin down** after ~15 minutes idle; the next request cold-starts
+  (roughly 30–60s).
+- **Free instances are memory-tight** and ADK + LiteLLM are heavy imports. A boot that
+  dies with no Python traceback is usually the OOM killer — bump the instance size.
+- **Verify from the logs:** the uvicorn startup line, plus
+  `[observability] OTel enabled -> … (signals=traces+metrics+logs)` if you set the OTel
+  vars. Seeing `OpenTelemetry SDK is not installed` instead means the build predates
+  `requirements-otel.txt` being added to the `Dockerfile` — redeploy.
+
+### Hugging Face Spaces (free, alternative)
+
+The same image also runs as-is on a **Space** (Docker SDK), free CPU tier, no credit
+card. A Space routes to `app_port` from the YAML front-matter at the very top of this
+README (`7860`) — keep that block first in the file or the Space won't configure itself.
 
 You need two free accounts, and they're unrelated: **Hugging Face** hosts the container
 but does **not** supply a model key, so you also need a **model provider**. The
 fewest-signups default below uses **Google Gemini** — its key comes from Google AI Studio
-with your existing Google account, and the free tier is generous. (The free HF CPU tier
-can't host open-model *weights* locally, so the app always calls a hosted model API; you
-just pick which one via `GTM_MODEL`.)
+with your existing Google account, and the free tier is generous.
 
 **1. Create the Space** — New → Space → **Docker** (blank template), then name it.
 Requires a free [Hugging Face account](https://huggingface.co/join).
@@ -332,16 +491,23 @@ repo under *Settings → Secrets and variables → Actions*:
 | Secret | `HF_TOKEN` | an HF access token with **write** scope ([settings/tokens](https://huggingface.co/settings/tokens)) |
 
 > `HF_TOKEN` here is a *GitHub* secret used only to push to the Space — unrelated to the
-> `HF_TOKEN` *Space* secret you'd set for HF Inference under "Other backends" below.
+> `HF_TOKEN` *Space* secret you'd set for HF Inference under
+> [Model backends](#model-backends-either-host) below.
 
-Before pushing, the workflow fails fast if those aren't set, if the Space front-matter is
-missing or disagrees with the Dockerfile's port, or if anything that looks like a real
-secret (`.env`, `*.pem`, `playbooks/private/`) has been committed — a Space can be public.
+**While `HF_SPACE`/`HF_USER` are unset the job skips**, so hosting on Render alone won't
+leave a failed run on every push. That also makes a Space a one-step fallback: add the two
+variables and the secret, and mirroring resumes on the next push.
+
+Once configured, the workflow refuses to push if the Space front-matter is missing or
+disagrees with the Dockerfile's port, or if anything that looks like a real secret
+(`.env`, `*.pem`, `playbooks/private/`) has been committed — a Space can be public.
 
 The sync is a **force push**: the Space mirrors this repo, so edits made in the Space's web
 UI get overwritten on the next push. Change things here, not there.
 
-**Other backends** — same container, just change the Secrets:
+### Model backends (either host)
+
+Same image on Render or a Space — only the env vars change:
 
 - **Groq** (hosted open Llama models, free tier): `GTM_MODEL=groq/llama-3.3-70b-versatile`,
   `GROQ_API_KEY=…` from [console.groq.com/keys](https://console.groq.com/keys) — needs a

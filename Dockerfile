@@ -32,9 +32,15 @@ ENV HOME=/home/user \
 WORKDIR /home/user/app
 
 # Python deps first for better layer caching (app code changes more often).
+# requirements-otel.txt is included so a host can turn on trace export purely by
+# setting OTEL_* env vars; observability.py stays inert until an endpoint is set,
+# but without the exporter package installed it can only print a "not installed"
+# hint and give up.
 COPY --chown=user:user requirements.txt ./requirements.txt
 COPY --chown=user:user web/requirements.txt ./web/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt -r web/requirements.txt
+COPY --chown=user:user requirements-otel.txt ./requirements-otel.txt
+RUN pip install --no-cache-dir \
+    -r requirements.txt -r web/requirements.txt -r requirements-otel.txt
 
 # App source. .dockerignore keeps out .env, node_modules, the local dist, and
 # the gitignored private/ playbooks — so no secrets or internal content are baked

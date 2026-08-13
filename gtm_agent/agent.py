@@ -32,12 +32,12 @@ from .tools import ae_tools, sc_tools, shared_tools, tsm_tools
 # here, at import time, no matter who imports the agent.
 load_env()
 
-# Best-effort: send ADK's OpenTelemetry traces to an OTLP backend if one is
-# configured via env (see observability.py). No-op otherwise.
+# Best-effort: send ADK's OpenTelemetry traces/metrics/logs to an OTLP backend if
+# one is configured via env (see observability.py). No-op otherwise.
 try:  # pragma: no cover - optional dependency / config
-    from .observability import configure_tracing
+    from .observability import configure_telemetry
 
-    configure_tracing()
+    configure_telemetry()
 except Exception:  # never let telemetry setup break the agent
     pass
 

@@ -1,10 +1,14 @@
 name: Sync to Hugging Face Space
 
 # Mirrors this repo into a Hugging Face Docker Space on every push, which makes
-# the Space rebuild and redeploy. Requires (see README, "Auto-sync from GitHub"):
+# the Space rebuild and redeploy. Configure (see README, "Auto-sync from GitHub"):
 #   - Repository variable HF_SPACE  = "<owner>/<space-name>"
 #   - Repository variable HF_USER   = your Hugging Face username (the token owner)
 #   - Repository secret   HF_TOKEN  = a Hugging Face access token with WRITE scope
+#
+# Until HF_SPACE and HF_USER exist, the job SKIPS rather than fails — so hosting
+# elsewhere (Render) doesn't leave a red X on every push, and HF stays a one-step
+# fallback: set the two variables and the secret, and syncing resumes.
 #
 # The push is a force push: the Space is a mirror of this repo, so edits made in
 # the Space's web UI are overwritten on the next sync. Make changes here, not there.
@@ -21,6 +25,9 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # No Space configured -> nothing to mirror. Skipped, not failed. (The secrets
+    # context can't be read in a job-level `if`, so HF_TOKEN is checked below.)
+    if: vars.HF_SPACE != '' && vars.HF_USER != ''
     steps:
       - name: Check out full history
         uses: actions/checkout@v4
@@ -29,23 +36,17 @@ jobs:
           fetch-depth: 0
           lfs: true
 
-      - name: Verify sync target is configured
+      - name: Validate configuration
         env:
           HF_SPACE: ${{ vars.HF_SPACE }}
-          HF_USER: ${{ vars.HF_USER }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          missing=0
-          if [ -z "$HF_SPACE" ]; then
-            echo "::error::Repository variable HF_SPACE is not set (expected '<owner>/<space-name>')."
-            missing=1
-          elif ! printf '%s' "$HF_SPACE" | grep -q '^[^/][^/]*/[^/][^/]*$'; then
-            echo "::error::HF_SPACE must look like '<owner>/<space-name>', got '$HF_SPACE'."
-            missing=1
-          fi
-          [ -n "$HF_USER" ] || { echo "::error::Repository variable HF_USER is not set (your Hugging Face username)."; missing=1; }
-          [ -n "$HF_TOKEN" ] || { echo "::error::Repository secret HF_TOKEN is not set (HF token with write scope)."; missing=1; }
-          exit $missing
+          bad=0
+          printf '%s' "$HF_SPACE" | grep -q '^[^/][^/]*/[^/][^/]*$' \
+            || { echo "::error::HF_SPACE must look like '<owner>/<space-name>', got '$HF_SPACE'."; bad=1; }
+          [ -n "$HF_TOKEN" ] \
+            || { echo "::error::HF_SPACE/HF_USER are set but the HF_TOKEN secret is missing (need an HF token with write scope)."; bad=1; }
+          exit $bad
 
       - name: Refuse to sync if secrets are tracked
         run: |
