@@ -92,7 +92,20 @@ def _model() -> LiteLlm | Gemini:
     expects. Everything else points at a local/OpenAI-compatible server.
     """
     if _GEMINI_MODEL_NAME:
-        gemini_kwargs: dict = {"model": _GEMINI_MODEL_NAME}
+        gemini_kwargs: dict = {
+            "model": _GEMINI_MODEL_NAME,
+            # Gemini's free tier returns 503 UNAVAILABLE ("high demand") when capacity
+            # is tight, and 429 when rate-limited. retry_options defaults to None, which
+            # means the very first 503 reaches the user as a failed turn. Retry with
+            # backoff instead -- these spikes are usually seconds long.
+            "retry_options": types.HttpRetryOptions(
+                attempts=4,
+                initial_delay=1.0,
+                max_delay=10.0,
+                exp_base=2.0,
+                http_status_codes=[429, 500, 502, 503, 504],
+            ),
+        }
         key = _gemini_key()
         if key:
             gemini_kwargs["client_kwargs"] = {"api_key": key}
