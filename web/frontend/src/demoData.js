@@ -38,7 +38,21 @@ export const COORDINATOR_SEED = [
     role: "assistant",
     agent: "gtm_coordinator",
     text: "Meridian Health is flagged At Risk with 5 days left and an unresolved PII-redaction criterion. Want me to draft a get-well plan with Pre-Sales?",
-    actions: ["Yes, draft it", "View details"],
+    // These seeded turns are never sent to the agent, so each action carries a
+    // self-contained prompt rather than its label ("Yes, draft it" alone gives the
+    // agent nothing for "it" to refer to).
+    actions: [
+      {
+        label: "Yes, draft it",
+        prompt:
+          "Draft a get-well plan for the Meridian Health POV with Pre-Sales. It's At Risk with 5 days left and an unresolved PII-redaction success criterion. Cover the open criteria, an owner for each, and a day-by-day plan through the POV end date.",
+      },
+      {
+        label: "View details",
+        prompt:
+          "Give me the full technical validation status for Meridian Health: each POV success criterion and whether it's met or open, days remaining, and what the risk means for the close.",
+      },
+    ],
   },
 ];
 
