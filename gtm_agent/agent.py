@@ -94,16 +94,20 @@ def _model() -> LiteLlm | Gemini:
     if _GEMINI_MODEL_NAME:
         gemini_kwargs: dict = {
             "model": _GEMINI_MODEL_NAME,
-            # Gemini's free tier returns 503 UNAVAILABLE ("high demand") when capacity
-            # is tight, and 429 when rate-limited. retry_options defaults to None, which
-            # means the very first 503 reaches the user as a failed turn. Retry with
-            # backoff instead -- these spikes are usually seconds long.
+            # Gemini's free tier returns 503 UNAVAILABLE when capacity is tight, and
+            # retry_options defaults to None -- so the very first 503 reaches the user as
+            # a failed turn. Those spikes last seconds, so retry with backoff.
+            #
+            # 429 is deliberately NOT retried: the binding free-tier limit is per DAY
+            # (quotaId GenerateRequestsPerDayPerProjectPerModel-FreeTier), so retrying
+            # just burns time in the request path and fails anyway. A 429 needs a
+            # different model or a billed project, not a retry.
             "retry_options": types.HttpRetryOptions(
                 attempts=4,
                 initial_delay=1.0,
                 max_delay=10.0,
                 exp_base=2.0,
-                http_status_codes=[429, 500, 502, 503, 504],
+                http_status_codes=[500, 502, 503, 504],
             ),
         }
         key = _gemini_key()
