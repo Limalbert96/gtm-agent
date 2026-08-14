@@ -94,3 +94,18 @@ Principles: adoption is the leading indicator of renewal - watch the active-user
 ratio and whether the platform is embedded in the incident workflow. Turn healthy
 adoption into expansion and route commercial plays back to Sales.
 """.strip()
+
+
+# Appended to every agent. Left to itself a model decorates headings with emoji,
+# which reads as a toy in front of a customer.
+_STYLE_RULE = """
+
+Formatting: markdown and plain professional prose only. No emoji and no decorative
+symbols anywhere, including in headings. Use "##" headings or short bold labels for
+sections, and tables for anything comparative.
+"""
+
+COORDINATOR_INSTRUCTION += _STYLE_RULE
+SALES_INSTRUCTION += _STYLE_RULE
+PRESALES_INSTRUCTION += _STYLE_RULE
+CUSTOMER_SUCCESS_INSTRUCTION += _STYLE_RULE

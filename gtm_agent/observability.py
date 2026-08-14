@@ -11,7 +11,7 @@ hostname appears here. Configuration is entirely environment-driven, using the
 standard OTel env vars:
 
     OTEL_EXPORTER_OTLP_ENDPOINT   turns everything on (base URL, no /v1/... path)
-    OTEL_EXPORTER_OTLP_HEADERS    auth headers as name=value pairs, e.g. "api-key=<key>"
+    OTEL_EXPORTER_OTLP_HEADERS    auth - just the API key (see _normalize_headers)
     OTEL_SERVICE_NAME             service name (default "gtm-agent")
 
 Per-signal opt-outs, for when one is noisy or your backend doesn't take it:
@@ -49,6 +49,37 @@ def _flag(name: str, default: bool = True) -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
+# The header name a bare key is sent as. New Relic's is "api-key".
+_BARE_KEY_HEADER = "api-key"
+
+
+def _normalize_headers() -> None:
+    """Let OTEL_EXPORTER_OTLP_HEADERS hold nothing but the API key.
+
+    OTLP defines that variable as a comma-separated list of `name=value` HTTP
+    headers, so a New Relic key strictly has to be written `api-key=<key>`. That
+    doubled `=` reads like a typo next to scalar vars like OTEL_SERVICE_NAME, and
+    getting it wrong fails silently -- the SDK logs "Header format invalid!", sends
+    no auth header, and every export 403s while the app looks perfectly healthy.
+
+    So a value with no `=` is treated as a bare key and expanded to
+    "api-key=<key>". A value that already contains `=` passes through untouched, so
+    the spec form, multi-header values, and other backends' header names
+    (e.g. "x-honeycomb-team=<key>") all keep working as specified.
+
+    Per-signal variants (OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_HEADERS) are left
+    alone: reaching for one of those means you know the spec, so use its form.
+    """
+    var = "OTEL_EXPORTER_OTLP_HEADERS"
+    raw = os.environ.get(var, "").strip()
+    if not raw or "=" in raw:
+        return
+
+    os.environ[var] = f"{_BARE_KEY_HEADER}={raw}"
+    # Never log the key itself.
+    print(f"[observability] {var}: bare key expanded to '{_BARE_KEY_HEADER}=<key>'")
+
+
 def configure_telemetry() -> bool:
     """Register OTLP exporters for traces, metrics, and logs.
 
@@ -59,6 +90,9 @@ def configure_telemetry() -> bool:
     global _CONFIGURED
     if _CONFIGURED or not _should_enable():
         return _CONFIGURED
+
+    # Must run before any exporter is constructed -- they read the env at init.
+    _normalize_headers()
 
     try:
         from opentelemetry.sdk.resources import Resource
