@@ -31,6 +31,7 @@ export default function App() {
   // Chat state (the Coordinator view is the one functional, streaming surface).
   const [messages, setMessages] = useState(COORDINATOR_SEED);
   const [busy, setBusy] = useState(false);
+  const [activeAgent, setActiveAgent] = useState(null); // who is answering right now
   const [attachment, setAttachment] = useState(null); // { filename, chars, file_text }
 
   useEffect(() => {
@@ -47,6 +48,30 @@ export default function App() {
       next[next.length - 1] = last;
       return next;
     });
+
+  // An "agent" event is a message BOUNDARY, not a relabel: each agent that
+  // contributes to a turn gets its own bubble, so "who said what" is unambiguous.
+  const startAgentMessage = (name) => {
+    setActiveAgent(name);
+    setMessages((prev) => {
+      const next = prev.slice();
+      const last = next[next.length - 1];
+      // Reuse the placeholder when the previous agent produced nothing -- e.g. the
+      // coordinator delegating immediately -- instead of leaving an empty bubble.
+      if (last && last.role === "assistant" && !last.text && !last.thought) {
+        next[next.length - 1] = { ...last, agent: name, pending: true };
+        return next;
+      }
+      next.push({
+        role: "assistant",
+        agent: name,
+        text: "",
+        thought: "",
+        pending: true,
+      });
+      return next;
+    });
+  };
 
   const handleAttach = async (file) => {
     try {
@@ -65,8 +90,15 @@ export default function App() {
     setMessages((prev) => [
       ...prev,
       { role: "user", text },
-      { role: "assistant", text: "", agent: "gtm_coordinator", pending: true },
+      {
+        role: "assistant",
+        text: "",
+        thought: "",
+        agent: "gtm_coordinator",
+        pending: true,
+      },
     ]);
+    setActiveAgent("gtm_coordinator");
     const usedAttachment = attachment;
     setAttachment(null);
 
@@ -79,12 +111,23 @@ export default function App() {
           file_text: fileText,
         },
         {
-          onAgent: (name) => patchLast({ agent: name }),
+          onAgent: startAgentMessage,
           onDelta: (chunk) =>
             patchLast((last) => ({ text: (last.text || "") + chunk, pending: false })),
           onReplace: (full) => patchLast({ text: full, pending: false }),
+          onThought: (chunk) =>
+            patchLast((last) => ({ thought: (last.thought || "") + chunk })),
+          // The server measures each agent's duration; the client just displays it.
+          onAgentDone: (data) =>
+            patchLast({ durationMs: data?.ms ?? null, pending: false }),
           onFinal: (data) =>
-            patchLast({ text: data.reply, agent: data.agent, pending: false }),
+            // Don't clobber streamed text: `reply` only fills a bubble that never
+            // received deltas (some google-adk versions only emit a final event).
+            patchLast((last) => ({
+              text: last.text || data.reply,
+              agent: last.agent || data.agent,
+              pending: false,
+            })),
           onError: (msg) => patchLast({ text: `⚠︎ ${msg}`, pending: false }),
         }
       );
@@ -96,6 +139,7 @@ export default function App() {
       if (usedAttachment) setAttachment(usedAttachment);
     } finally {
       setBusy(false);
+      setActiveAgent(null);
     }
   };
 
@@ -121,6 +165,7 @@ export default function App() {
           <CoordinatorView
             messages={messages}
             busy={busy}
+            activeAgent={activeAgent}
             onSend={handleSend}
             onAction={handleSend}
             attachment={attachment}

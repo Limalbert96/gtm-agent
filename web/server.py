@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
@@ -162,10 +163,20 @@ class _Runtime:
         """Run one turn, yielding (kind, payload) events as they arrive.
 
         Yields, in order as ADK produces them:
-            ("agent", name)         -- the responding sub-agent changed
-            ("delta", text)         -- text to append to the current bubble
-            ("replace", text)       -- replace the current bubble's text wholesale
-            ("final", {reply, agent}) -- the turn is complete
+            ("agent", name)             -- a new sub-agent is answering; the client
+                                           treats this as a MESSAGE BOUNDARY and
+                                           starts a fresh bubble
+            ("delta", text)             -- append to the current bubble's answer
+            ("replace", text)           -- replace the current bubble's answer
+            ("thought", text)           -- append to the current bubble's reasoning
+            ("agent_done", {agent, ms}) -- that agent finished, with its duration
+            ("final", {reply, agent})   -- the turn is complete
+
+        Reasoning is streamed separately from the answer so the UI can tuck it
+        behind a disclosure instead of prepending a thinking model's deliberation
+        to every reply. Durations are measured here rather than client-side
+        because this loop is the only place that knows when an agent actually
+        started and stopped.
 
         Whether text truly streams token-by-token depends on the installed
         google-adk version. If only the final event carries text, the client
@@ -179,19 +190,69 @@ class _Runtime:
             role="user", parts=[self._types.Part(text=prompt)]
         )
 
-        sent = ""            # text already emitted for the in-progress bubble
+        sent = ""            # answer text already emitted for the open bubble
+        sent_thought = ""    # reasoning already emitted for the open bubble
         reply_text = ""
-        agent_name = COORDINATOR_NAME
+        agent_name = COORDINATOR_NAME     # ADK author of the current event
+        client_agent = COORDINATOR_NAME   # bubble the client currently has open
+        started = time.monotonic()
+        specialists = {a.name for a in getattr(self._runner.agent, "sub_agents", [])}
 
         async for event in self._runner.run_async(
             user_id=USER_ID, session_id=session_id, new_message=message
         ):
             author = _event_author(event)
-            if author and author != agent_name:
+            if author:
                 agent_name = author
-                yield ("agent", agent_name)
 
+            # A specialist consulted as a TOOL runs in a nested runner whose events
+            # never reach this stream -- only its function_response does. Surface each
+            # one as its own bubble, or three specialists' work collapses into
+            # whatever the coordinator chose to say about it.
+            for spec, answer in _tool_agent_answers(event, specialists):
+                if sent or sent_thought:
+                    yield (
+                        "agent_done",
+                        {"agent": client_agent, "ms": _elapsed_ms(started)},
+                    )
+                yield ("agent", spec)
+                yield ("delta", answer)
+                yield ("agent_done", {"agent": spec, "ms": _elapsed_ms(started)})
+                client_agent = None  # whoever speaks next needs a fresh bubble
+                sent = ""
+                sent_thought = ""
+                started = time.monotonic()
+
+            thought = _event_thought(event)
             text = _event_text(event)
+
+            # Open a new bubble whenever the speaker differs from what's on screen --
+            # a real hand-off, or the coordinator resuming after a specialist's answer.
+            # Skipping this when nothing was produced keeps empty bubbles out.
+            if (thought or text) and client_agent != agent_name:
+                if sent or sent_thought:
+                    yield (
+                        "agent_done",
+                        {"agent": client_agent, "ms": _elapsed_ms(started)},
+                    )
+                yield ("agent", agent_name)
+                client_agent = agent_name
+                sent = ""
+                sent_thought = ""
+                started = time.monotonic()
+
+            if thought and thought != sent_thought:
+                # Same prefix-growth trick as the answer text below: emit only
+                # what's new when the model streams cumulative reasoning.
+                delta = (
+                    thought[len(sent_thought):]
+                    if thought.startswith(sent_thought)
+                    else thought
+                )
+                if delta:
+                    yield ("thought", delta)
+                sent_thought = thought
+
             if text and text != sent:
                 if text.startswith(sent):
                     yield ("delta", text[len(sent):])
@@ -202,6 +263,11 @@ class _Runtime:
             if event.is_final_response() and text:
                 reply_text = text
 
+        if sent or sent_thought:
+            yield (
+                "agent_done",
+                {"agent": client_agent or agent_name, "ms": _elapsed_ms(started)},
+            )
         if not reply_text:
             reply_text = sent or "(The assistant returned no text for this turn.)"
         yield ("final", {"reply": reply_text, "agent": agent_name or COORDINATOR_NAME})
@@ -210,14 +276,67 @@ class _Runtime:
 _RUNTIME = _Runtime()
 
 
-def _event_text(event: Any) -> str:
-    """Concatenate any text parts on an ADK event's content (empty if none)."""
+def _elapsed_ms(started: float) -> int:
+    """Whole milliseconds since a time.monotonic() reading."""
+    return int((time.monotonic() - started) * 1000)
+
+
+def _parts_text(event: Any, *, thought: bool) -> str:
+    """Concatenate an ADK event's text parts, selecting answer vs. reasoning.
+
+    ADK marks a model's internal reasoning as ``Part(text=..., thought=True)``
+    (see google/adk/models/lite_llm.py). Answer text and reasoning therefore live
+    side by side on the same event, and the ``thought`` flag is the only thing
+    separating them -- so callers must say which one they want.
+    """
     content = getattr(event, "content", None)
     parts = getattr(content, "parts", None) if content else None
     if not parts:
         return ""
-    chunks = [getattr(p, "text", None) for p in parts]
+    chunks = [
+        getattr(p, "text", None)
+        for p in parts
+        if bool(getattr(p, "thought", False)) is thought
+    ]
     return "".join(c for c in chunks if c)
+
+
+def _event_text(event: Any) -> str:
+    """The answer text on an ADK event, excluding reasoning (empty if none).
+
+    Excluding thought parts here is what keeps a thinking model's deliberation
+    ("Okay, let me process this...") out of the reply.
+    """
+    return _parts_text(event, thought=False)
+
+
+def _event_thought(event: Any) -> str:
+    """The reasoning text on an ADK event, excluding the answer (empty if none)."""
+    return _parts_text(event, thought=True)
+
+
+def _tool_agent_answers(event: Any, specialists: set[str]) -> list[tuple[str, str]]:
+    """Specialist answers that arrived as tool results, as (agent_name, text).
+
+    The coordinator can reach a specialist two ways: transfer to it (the specialist
+    becomes the event author, handled elsewhere) or call it as a tool. The tool path
+    exists because a transfer can only ever reach ONE agent, so a multi-part question
+    needs tool calls -- but a tool's inner agent runs in a nested runner whose events
+    don't surface here. Its answer only appears as a function_response, which is what
+    this reads so each specialist still gets attributed.
+    """
+    content = getattr(event, "content", None)
+    parts = getattr(content, "parts", None) if content else None
+    answers: list[tuple[str, str]] = []
+    for part in parts or []:
+        fn_response = getattr(part, "function_response", None)
+        if fn_response is None or fn_response.name not in specialists:
+            continue
+        payload = fn_response.response
+        text = payload.get("result") if isinstance(payload, dict) else payload
+        if isinstance(text, str) and text.strip():
+            answers.append((fn_response.name, text))
+    return answers
 
 
 def _event_author(event: Any) -> Optional[str]:

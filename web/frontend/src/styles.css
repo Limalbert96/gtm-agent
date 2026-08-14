@@ -403,7 +403,20 @@ body {
 .msg { display: flex; flex-direction: column; }
 .msg-user { align-items: flex-end; }
 .msg-assistant { align-items: flex-start; }
-.msg-head { margin-bottom: 6px; }
+/* Attribution left, per-agent state right. width+max-width together give the head
+   the same footprint as the bubble below it, so the status sits flush to its edge. */
+.msg-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 6px; width: 100%; max-width: 82%;
+}
+.msg-status { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.msg-status-live { display: inline-flex; gap: 3px; align-items: center; }
+.msg-status-live span {
+  width: 5px; height: 5px; border-radius: 50%; background: var(--muted);
+  animation: bounce 1.2s infinite ease-in-out;
+}
+.msg-status-live span:nth-child(2) { animation-delay: 0.15s; }
+.msg-status-live span:nth-child(3) { animation-delay: 0.3s; }
 .bubble { max-width: 82%; font-size: 14.5px; line-height: 1.6; border-radius: 14px; }
 .bubble-user {
   background: var(--primary); color: #fff; padding: 12px 16px;
@@ -414,7 +427,55 @@ body {
   border: 1px solid var(--border); padding: 13px 16px;
   border-bottom-left-radius: 5px;
 }
-.prose { white-space: pre-wrap; word-wrap: break-word; }
+/* MUST stay `normal`. react-markdown emits a newline text node between every pair
+   of block elements (`</h3>\n<p>`, `<li>x\n<ul>`), so `pre-wrap` here renders each
+   one as a blank line and fakes an indent before every nested list. Markdown owns
+   the spacing now; the margins below are the only vertical rhythm. */
+.prose { white-space: normal; word-wrap: break-word; }
+.prose > :first-child { margin-top: 0; }
+.prose > :last-child { margin-bottom: 0; }
+/* The agents emit h1-h3 fairly freely, so keep the steps small: these are
+   section labels inside a chat bubble, not page titles. */
+.prose h1, .prose h2, .prose h3, .prose h4 {
+  font-family: var(--font-display); font-weight: 600; line-height: 1.3;
+  margin: 14px 0 6px;
+}
+.prose h1 { font-size: 15.5px; }
+.prose h2 { font-size: 15px; }
+.prose h3 { font-size: 14px; }
+.prose h4 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.prose p { margin: 0 0 8px; }
+.prose ul, .prose ol { margin: 0 0 8px; padding-left: 18px; }
+.prose li { margin: 2px 0; }
+.prose li > p { margin: 0 0 4px; }
+.prose li > ul, .prose li > ol { margin: 2px 0; }
+.prose strong { font-weight: 600; color: #fff; }
+.prose a { color: var(--primary); text-decoration: underline; }
+.prose hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+.prose blockquote {
+  margin: 0 0 10px; padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--border); color: var(--muted);
+}
+.prose code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  background: var(--card-3); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 5px;
+}
+.prose pre {
+  background: var(--card-3); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; overflow-x: auto; margin: 0 0 10px; white-space: pre;
+}
+.prose pre code { background: none; border: 0; padding: 0; }
+/* Tables can be wider than the bubble; scroll them rather than the page. */
+.prose table {
+  display: block; overflow-x: auto; width: 100%;
+  border-collapse: collapse; margin: 0 0 10px; font-size: 13.5px;
+}
+.prose th, .prose td {
+  border: 1px solid var(--border); padding: 6px 10px; text-align: left;
+  vertical-align: top; white-space: normal;
+}
+.prose th { background: var(--card-3); font-weight: 600; }
 .msg-actions { display: flex; gap: 10px; margin-top: 12px; }
 .msg-action {
   font-family: var(--font-body); font-size: 13px; font-weight: 600;
@@ -436,6 +497,43 @@ body {
 @keyframes bounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
   30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* One-line stand-in for an agent that reasoned without answering. */
+.msg-aside {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--muted);
+}
+.msg-aside-role { font-weight: 600; }
+
+/* Collapsed reasoning. A thinking model's deliberation is useful but shouldn't be
+   the first thing you read, so it sits above the answer, closed by default. */
+.reasoning { margin-bottom: 10px; }
+.reasoning-toggle {
+  font-family: var(--font-body); font-size: 12px; color: var(--muted);
+  background: none; border: 0; padding: 0; cursor: pointer;
+}
+.reasoning-toggle:hover { color: var(--text); }
+.reasoning-body {
+  margin-top: 8px; padding: 10px 12px;
+  background: var(--card-3); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px; color: var(--muted); white-space: pre-wrap;
+  max-height: 260px; overflow-y: auto;
+}
+
+/* Live status strip between transcript and composer: which agent is working now. */
+.agent-status {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 22px; font-size: 12.5px; color: var(--muted);
+  border-top: 1px solid var(--border);
+}
+.agent-status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  animation: pulse 1.4s infinite ease-in-out;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
 }
 
 /* --------------------------------------------------------------- Composer */

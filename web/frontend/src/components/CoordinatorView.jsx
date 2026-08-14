@@ -3,6 +3,7 @@ import Icon from "./Icons.jsx";
 import Message from "./Message.jsx";
 import Composer from "./Composer.jsx";
 import { STRATEGIC_OVERVIEW, NEXT_STEPS } from "../demoData.js";
+import { roleForAgent } from "../roles.js";
 
 // GTM Coordinator workspace — the one *functional* view: the real streaming ADK
 // assistant ("ADK Intelligence"), flanked by a Strategic Overview + Next Steps
@@ -11,6 +12,7 @@ import { STRATEGIC_OVERVIEW, NEXT_STEPS } from "../demoData.js";
 export default function CoordinatorView({
   messages,
   busy,
+  activeAgent,
   onSend,
   onAction,
   attachment,
@@ -62,12 +64,27 @@ export default function CoordinatorView({
                   text={m.text}
                   agent={m.agent}
                   pending={m.pending}
+                  thought={m.thought}
+                  durationMs={m.durationMs}
                   actions={m.actions}
                   onAction={onAction}
                 />
               ))}
             </div>
           </div>
+
+          {/* Who is answering right now. A three-role turn can take half a minute,
+              so naming the working agent is the difference between "thinking" and
+              "stuck". Cleared when the turn ends. */}
+          {activeAgent ? (
+            <div className="agent-status" aria-live="polite">
+              <span
+                className="agent-status-dot"
+                style={{ background: roleForAgent(activeAgent).accent }}
+              />
+              {roleForAgent(activeAgent).label} is working…
+            </div>
+          ) : null}
 
           <Composer
             onSend={onSend}

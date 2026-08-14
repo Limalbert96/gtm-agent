@@ -173,7 +173,7 @@ These variables are documented here only; the deploy sections point back to this
 | Variable | Purpose |
 |---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Base URL — setting it is what turns telemetry on. No `/v1/...` path; the SDK appends it. |
-| `OTEL_EXPORTER_OTLP_HEADERS` | Auth, as a comma-separated list of `name=value` header pairs. New Relic: `api-key=<ingest License key>`. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Auth — **just the ingest key**, nothing else. `observability.py` sends it as the `api-key` header New Relic expects. |
 | `OTEL_SERVICE_NAME` | Service name in the backend (default `gtm-agent`). |
 | `OTEL_RESOURCE_ATTRIBUTES` | Optional extra resource tags, e.g. `deployment.environment=render`. |
 | `GTM_OTEL_METRICS` | `0` to skip the metrics pipeline. |
@@ -185,7 +185,7 @@ Locally:
 ```bash
 pip install -r requirements-otel.txt      # the Dockerfile already installs these
 export OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.nr-data.net
-export OTEL_EXPORTER_OTLP_HEADERS="api-key=YOUR_INGEST_LICENSE_KEY"
+export OTEL_EXPORTER_OTLP_HEADERS=YOUR_INGEST_LICENSE_KEY
 export OTEL_SERVICE_NAME=gtm-agent
 ```
 
@@ -200,15 +200,18 @@ Startup prints which signals came up — the fastest way to tell config from plu
 - **Endpoint:** `https://otlp.nr-data.net`, or `https://otlp.eu01.nr-data.net` for an EU
   account — the wrong region 403s.
 - **Key:** an **ingest License key** (~40 chars, usually ends `NRAL`), *not* a user key
-  (`NRAK-…`), sent as the `api-key` header:
-  `OTEL_EXPORTER_OTLP_HEADERS=api-key=NRAL…`
-  - The doubled `=` is correct. Per the
-    [OTLP exporter spec](https://opentelemetry.io/docs/languages/sdk-configuration/otlp-exporter/),
-    this variable is a comma-separated list of `name=value` header pairs — unlike the
-    scalar `OTEL_SERVICE_NAME` and `..._ENDPOINT`. Drop the `api-key=` and it fails
-    silently: the SDK logs `Header format invalid!`, sends no auth header, and every
-    export 403s while the app looks perfectly healthy.
-  - Other backends use their own header name — e.g. `x-honeycomb-team=<key>`.
+  (`NRAK-…`). Set it on its own: `OTEL_EXPORTER_OTLP_HEADERS=NRAL…`
+  - Strictly, the
+    [OTLP spec](https://opentelemetry.io/docs/languages/sdk-configuration/otlp-exporter/)
+    makes this variable a comma-separated list of `name=value` header pairs, so the raw
+    form is `api-key=NRAL…` — unlike the scalar `OTEL_SERVICE_NAME` and `..._ENDPOINT`.
+    Since a bare key would otherwise fail *silently* (the SDK logs
+    `Header format invalid!`, sends no auth header, and every export 403s while the app
+    looks healthy), `observability.py` expands a value with no `=` into
+    `api-key=<key>` before any exporter starts.
+  - Values that already contain `=` pass through untouched, so the spec form,
+    multi-header values, and other backends still work — e.g.
+    `x-honeycomb-team=<key>` for Honeycomb.
 - **No quotes** when typing it into a hosting dashboard — the `"…"` above is shell syntax.
 - **`OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT=4095`** and
   **`OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT=4095`** — ADK puts prompts and responses on
@@ -267,21 +270,126 @@ Two caveats: AI monitoring is a **preview** feature that must be enabled on the 
 and its views key off `gen_ai.operation.name` values like `chat` — ADK also emits
 agent/tool/workflow operations, which may only surface in raw `Span` queries.
 
-> **Prompt content ships by default.** ADK's `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS`
-> defaults *on*, which puts `gen_ai.input.messages`, `gen_ai.output.messages`, and
-> `gen_ai.system_instructions` — full prompt and response text — into your backend. Set it
-> to `false` to send latency, tokens, and errors only. (ADK's own `adk deploy` defaults it
-> to `false` for exactly this reason.) Relevant once real CRM data replaces `data.py`.
+**Prompts and responses show as `<empty>`?** ADK has two separate content paths, and by
+default it uses the one New Relic's UI doesn't read:
+
+| | Attributes written | Read by NR's AI monitoring |
+|---|---|---|
+| Default (legacy) | `gcp.vertex.agent.llm_request` / `llm_response` | No — visible only via NRQL |
+| Experimental semconv | `gen_ai.input.messages` / `gen_ai.output.messages` | Yes |
+
+`ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` defaults *on*, so content is already being sent —
+just under the legacy names. To get it into the AI monitoring panel, opt into the
+experimental semconv and pick a span-bearing capture mode:
+
+```
+OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental
+OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=SPAN_AND_EVENT
+```
+
+`SPAN_AND_EVENT` puts content on both spans and log records (so it's queryable either
+way); `SPAN_ONLY` limits it to spans. The mode defaults to `NO_CONTENT` when unset, which
+is why the second variable is required and not just nice to have.
+
+> **Either path sends full prompt and response text to your backend.** For no content at
+> all you need both `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS=false` *and* the capture mode
+> left unset — turning off one still leaves the other. ADK's own `adk deploy` defaults the
+> legacy knob to `false` for this reason. Relevant once real CRM data replaces `data.py`.
 
 ## Things to ask it
 
+Every prompt below supplies the parameters its tool needs, so the agent answers in one
+turn instead of asking follow-ups. Account **names** work anywhere an id is expected.
+
+### Coordinator only (no delegation)
+
+Useful for showing that routing is a decision, not a reflex:
+
 - "What accounts do I have and what stage is each in?"
-- "How qualified is the Acme Retail deal? What are the MEDDPICC gaps?" *(Sales)*
-- "Size the Acme deal — ~640 GB/mo ingest, 22 full users, 60 core." *(Sales)*
-- "Scope a POV for Acme and give me an APM demo script." *(Pre-Sales)*
-- "Build me a discovery + competitive plan against Datadog." *(Pre-Sales)*
-- "Is Initech healthy on adoption, and what's the renewal risk?" *(Customer Success)*
-- "Give me a deal-team plan to advance Acme Retail to close." *(cross-functional)*
+- "Show me the GTM lifecycle and who owns each stage."
+
+### Sales — Account Executive
+
+| Prompt | Exercises |
+|---|---|
+| "How qualified is Globex FinTech? Show me the MEDDPICC gaps." | `qualify_opportunity` |
+| "Price a 3-year deal at 640 GB/month ingest, 22 full users, 60 core users." | `estimate_deal_value` |
+| "Build a mutual action plan for Vertex Logistics targeting close on 2026-09-30." | `build_mutual_action_plan` |
+
+### Pre-Sales — Solutions Consultant
+
+| Prompt | Exercises |
+|---|---|
+| "Scope a POV for Acme Retail." | `scope_pov` |
+| "Give me a beat-by-beat demo script for APM." | `build_demo_script` |
+| "Technical discovery questions for a Nagios shop." | `technical_discovery_questions` |
+| "Build me a battlecard against Datadog." | `competitive_battlecard` |
+| "Size monthly ingest for 40 APM apps, 300 hosts, 120 k8s nodes, 85 log sources, 25M monthly pageviews." | `estimate_ingest` |
+
+### Customer Success — Technical Success Manager
+
+| Prompt | Exercises |
+|---|---|
+| "Onboarding checklist for Sterling Financial." | `onboarding_checklist` |
+| "Is Initech SaaS healthy on adoption?" | `assess_adoption_health` |
+| "Where can we expand Umbra Media?" | `identify_expansion` |
+| "Assess renewal risk for Initech SaaS." | `assess_renewal_risk` |
+| "Run an observability maturity assessment for Initech — current vs. target state." | maturity play |
+| "Umbra Media's team has alert fatigue. Walk me through the alert-quality play." | alert-quality play |
+
+The last two come from `list_sales_plays` / `get_playbook` rather than a TSM tool, so any
+role can reach them. With organization-specific playbooks installed (see
+[Playbooks](#playbooks-methodology--private-content)) the same prompts resolve to your
+internal versions of those plays instead of the generic ones.
+
+### Two-role flows
+
+Each names accounts or asks questions that straddle an ownership boundary, forcing one
+handoff — the clearest way to show delegation without a three-way fan-out:
+
+| Prompt | Handoff |
+|---|---|
+| "Acme Retail's POV has 9 days left. What technical criteria are still unproven, and what's the deal worth at the ingest that environment implies?" | Pre-Sales → Sales |
+| "We're up against Datadog at Acme. Give me the battlecard, then the MEDDPICC gaps that competitive pressure exposes." | Pre-Sales → Sales |
+| "Meridian Health's POV is at risk on PII redaction. If we win it, what carries into onboarding as a first-value milestone?" | Pre-Sales → Customer Success |
+| "Sterling Financial just closed. What technical proof from validation should onboarding inherit, and what does week one look like?" | Pre-Sales → Customer Success |
+| "Umbra Media is healthy with a RUM and mobile signal — identify the expansion, then price it as a 2-year add-on." | Customer Success → Sales |
+| "Initech renews in ~120 days on soft usage. Assess the risk, then build a mutual action plan to secure it by 2026-12-15." | Customer Success → Sales |
+
+### Multi-part questions (and why one role answers them)
+
+| Prompt | Shape |
+|---|---|
+| "Take Acme Retail end to end: what's left to prove technically, what the contract is worth, and what week one of onboarding looks like if we sign." | One account across the whole lifecycle |
+| "Meridian Health is At Risk with 5 days left: the technical get-well plan, the commercial impact if it slips a quarter, and the adoption risk we inherit if we win it anyway." | One account, three lenses |
+
+**Expect one specialist to answer these, not three** — and that's the architecture, not
+a bug. ADK's `transfer_to_agent` sets a *single* target, so when the coordinator
+correctly tries to delegate a three-part question by calling it three times in one turn,
+the calls collapse and only the last target runs. The account's stage owner answers, and
+covers the parts it can.
+
+Exposing the specialists as `AgentTool`s does produce a genuine three-way fan-out (tool
+calls, unlike transfers, all execute). It was tried and reverted: on a local 8B model one
+such turn took ~400s, the specialists contradicted each other on deal value, and one
+failed its account lookup. If you run on a larger hosted model it's worth revisiting —
+`_tool_agent_answers()` in `web/server.py` already knows how to attribute the results.
+
+For a reliable multi-agent demo, use the two-role flows above: one hand-off is what this
+architecture and a small model can both execute consistently.
+
+### File upload
+
+The Coordinator view accepts attachments — drop a discovery transcript and ask:
+
+- "What MEDDPICC gaps does this transcript leave open?"
+
+> **Two caveats for live demos.** A single turn is roughly 3–5 model calls (coordinator →
+> `transfer_to_agent` → specialist); a three-role fan-out can be 8–10. On a free tier with
+> a low daily request cap that's only a couple of prompts, so run demos on a provider with
+> headroom. And multi-account prompts are the hardest thing for a small local model to
+> route — if you see a literal `transfer_to_agent(...)` in the reply instead of a handoff,
+> ask the accounts as separate turns or use a larger model.
 
 ## Sample accounts
 

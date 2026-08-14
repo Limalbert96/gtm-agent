@@ -56,6 +56,11 @@ export async function streamChat(body, handlers, signal) {
     if (event === "agent") handlers.onAgent?.(data);
     else if (event === "delta") handlers.onDelta?.(data);
     else if (event === "replace") handlers.onReplace?.(data);
+    // Reasoning arrives on its own event so the UI can tuck it behind a
+    // disclosure instead of prepending it to the answer.
+    else if (event === "thought") handlers.onThought?.(data);
+    // { agent, ms } -- the server times each agent; the client only renders it.
+    else if (event === "agent_done") handlers.onAgentDone?.(data);
     else if (event === "final") handlers.onFinal?.(data);
     else if (event === "error") handlers.onError?.(data?.message || String(data));
   };
